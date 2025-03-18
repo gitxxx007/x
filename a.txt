@@ -1,3 +1,6 @@
 https://github.com/gentilkiwi/mimikatz/releases
 https://learn.microsoft.com/en-us/sysinternals/downloads/procdump
 https://github.com/Offensive-Panda/ShadowDumper/releases/download/LsassDumpingV2.0/ShadowDumper.exe
+https://github.com/ropnop/kerbrute
+auxiliary/gather/kerberos_enumusers
+https://github.com/3gstudent/pyKerbrute
