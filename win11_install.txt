@@ -1,0 +1,23 @@
+# 1
+Shift-F10
+oobe\bypassnro
+
+# 2
+regedit
+HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE
+add value: BypassNRO -> 1
+shutdown /r /t 0
+
+sudo gedit /etc/gdm3/custom.conf
+WaylandEnable=false
+
+sudo apt-get autoremove open-vm-tools  
+sudo apt-get install open-vm-tools  
+sudo apt-get install open-vm-tools-desktop
+
+vmware-toolbox-cmd status
+sudo systemctl restart vmtoolsd
+pkill vmware-user
+
+vmware-user &
+sudo apt update && sudo apt upgrade
