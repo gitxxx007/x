@@ -21,3 +21,6 @@ pkill vmware-user
 
 vmware-user &
 sudo apt update && sudo apt upgrade
+
+# java install
+https://www.java.com/en/download/
