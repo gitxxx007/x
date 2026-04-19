@@ -1,0 +1,14 @@
+// 1. 开启 wolfSSL 硬件加密加速（AES-NI，释放CPU+内核栈压力）
+wolfSSL_CTX_set_default_digest(ctx, SHA256);
+wolfSSL_CTX_set_cipher_list(ctx, "ECDHE-RSA-AES256-GCM-SHA384"); // 高速GCM加密
+
+// 2. 禁用 SSL 冗余特性，减少内核网络栈数据量
+wolfSSL_CTX_set_quiet_shutdown(ctx, 1);  // 静默关闭，减少内核数据包
+wolfSSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE); // 减少内核IO次数
+
+
+
+// Windows 专用：增大 Socket 收发缓冲区（直接绕过内核小队列限制）
+int bufSize = 4 * 1024 * 1024; // 4MB 缓冲区
+setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char*)&bufSize, sizeof(bufSize));
+setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char*)&bufSize, sizeof(bufSize));
